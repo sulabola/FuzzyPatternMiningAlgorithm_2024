@@ -1,0 +1,2405 @@
+---
+title: "Pattern Expected Waiting Time"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+rm(list=ls(all=TRUE)) # Remove objects from environment
+set.seed(12)
+```
+
+#### Book: Introduction to stochastic processes with R by Robert Dobrow
+
+#### Example 3.33 on page 132
+
+#### Summary:
+#### Assume that successive occurrences of DNA nucleotides on a chromosome are modeled by a Markov chain.
+
+```{r}
+Ptilda <- matrix(NA,nr=4,nc=4)
+colnames(Ptilda) <- rownames(Ptilda) <- c(1,2,3,4) # 1=A, 2=C, 3=G, 4=T
+Ptilda[1,] <- c(0.3,0.2,0.3,0.2)  # Given an A in the 1st position
+Ptilda[2,] <- c(0.4,0.3,0.1,0.2)  # Given a  C in the 1st position
+Ptilda[3,] <- c(0.25,0.15,0.4,0.2)# Given a  G in the 1st position
+Ptilda[4,] <- c(0.2,0.2,0.3,0.3)  # Given a  T in the 1st position
+Ptilda
+
+```
+
+
+#### Consider searching sequentially across the chromosome until the pattern "accgc" first appears.
+
+#### Solution: (From the book -  Matrix approach)
+
+```{r}
+## The average number of nucleotides needed to reach a certain pattern
+## An absorbing Markov chain ("PP") is constructed with transition matrix
+
+t<-c(0.7,0.3,0,0,0,0)
+a<-c(0.5,0.3,0.2,0,0,0)
+ac<-c(0.3,0.4,0,0.3,0,0)
+acc<-c(0.5,0.4,0,0,0.1,0)
+accg<-c(0.6,0.25,0,0,0,0.15)
+accgc<-c(0,0,0,0,0,1)
+P<-matrix(c(t,a,ac,acc,accg,accgc),nr=6,nc=6,byrow = T)
+P
+Q<-P[1:5,1:5]
+F= solve(diag(5)-Q)  ## F = (I-Q)^(-1)
+F
+
+```
+
+
+```{r}
+## average number of nucleotides needed to reach pattern accgc
+
+sum(F[1,])
+```
+
+
+#### New Approach:
+
+
+```{r}
+## Function to Calculate Expected Waiting Time
+
+ExpWaitTime <- function(labels = c(0,1), trials = 100, pattern = c(0,0,1,1,1), P = matrix(c(0.25, 0.25, 0.25, 0.25), nrow = 2, ncol = 2)){
+  
+  init <- as.vector(rep(1/length(labels),length(labels)))
+  
+  states <- 1:length(init)
+  
+  simlist <- c() # empty vector to store the sequence of simulated states
+  simlist1 <- c() # empty vector to store the waiting times for each trial
+  
+  for (i in 1:trials) {
+  
+    simlist[1] <- sample(states,1,prob=init)#first state is chosen using the initial probabilities 
+  
+    for (j in 2:length(pattern)) {
+      simlist[j] <- sample(states,1,prob=P[simlist[j-1],])
+    }#next states are sampled based on the transition matrix P. The state at position j is sampled based on the previous state j-1
+  
+#checking for the pattern    
+    STATE <- c()
+    for (k in 1:length(pattern)) {
+      STATE[k] = simlist[k]
+    }
+    
+    n<-length(pattern)
+    m<-length(pattern)
+    
+    temp=n-2
+  #while loop continues generating new states and updating the sequence until the generated sequence matches the desired pattern  
+    while (!prod(labels[STATE]==pattern)){
+      simlist[n+1] <- sample(states,1,prob=P[simlist[n],])
+      for (l in 1:length(pattern)) {
+        STATE[l] = simlist[n-temp+l-1]
+      }
+      n = n+1 #  length of the current sequence
+      m = m+1 # total steps taken until the pattern appears.
+    }
+    
+    simlist1[i] <- m 
+    
+  }
+  
+  return(mean(simlist1)) # The function returns the mean of the waiting times across all trials, giving the expected waiting time until the desired pattern appears.
+  
+}
+```
+
+
+```{r}
+# Note
+# interested pattern: accgc == 12232
+
+Time_DNA = ExpWaitTime(labels = c(1,2,3,4), trials = 1000, pattern = c(1,2,2,3,2), P = Ptilda)
+
+Time_DNA
+```
+
+
+#### Fuzzyfying: (P = pR + (1 − p)A)
+
+
+```{r}
+## Function to find the the power (k^th power) of a given matrix
+
+MatrixPower <- function(Matrix,k) {
+	if (k == 0) return (diag(dim(Matrix)[1])) 
+	if (k == 1) return(Matrix)
+	if (k > 1) return(Matrix %*% MatrixPower(Matrix, k-1))
+}
+```
+
+
+#### Finding Stationary probabiities for a given matrix
+
+```{r}
+## Stationary distribution of discrete-time Markov chain
+## (uses eigenvectors)
+
+stationary <- function(mat){
+  x = eigen(t(mat))$vectors[,1]
+  return(as.double(x/sum(x)))
+}
+```
+
+
+```{r}
+FuzzyExpWaitTime <- function(labels = c(0,1), Ntrials = 100, pattern = c(0,0,1,1,1), Ptilda = matrix(c(0.25 ,0.25, 0.25, 0.25), nrow = 2, ncol = 2), alpha = seq(0.1,0.9,0.1), MMValue = 3608.52){
+  
+  ## Initializing minimum alpha
+  alpha_min <- 0
+  
+  ## Initializing stochastic matrix (each entry is same and represent equal probability)
+  A <- matrix(1/length(labels), nrow = length(labels), ncol = length(labels))
+  
+  ## Initializing temporary vector to save expected wait time for each alpha
+  TempExpTime <- c()
+  
+  ## Maximum matrix power (l). For now we set maximum matrix power to length of the pattern we are untested in.
+  l = length(pattern)
+  
+  ## Note: For each i (i.e. alpha value), we have 5 different powers (DNA example) of TempMatrix. Thus, to save all the matrices in correct order (alpha value and power), we need to save matrices within a matrix.
+  
+  ## Initializing a matrix which has a matrix in each entry
+  m <- matrix(0, nrow = length(labels), ncol = length(labels))
+  M <- matrix(list(m), nrow = length(alpha), ncol = l)
+  
+  ## For loop to calculate expected wait time and matrix power for each alpha
+  for (i in 1:length(alpha)) {
+    
+    ## Fuzzyfying
+    TempMatrix = alpha[i]*A + (1-alpha[i])*Ptilda
+    
+    ## Calculate expected wait time using "ExpWaitTime" for each alpha
+    TempExpTime[i] <- ExpWaitTime(labels = labels, trials = Ntrials, pattern = pattern, P = TempMatrix)
+    
+    ## Finding matrix powers
+    for (j in 1:l) {
+      M[[i,j]] <- MatrixPower(TempMatrix,j)
+    }
+    
+  }
+  
+  ## Finding alpha that gives the expected waiting time closer to the book value
+  alpha_min <- alpha[which.min(abs(TempExpTime-MMValue))]
+  
+  ExpWaitTime <- TempExpTime[which.min(abs(TempExpTime-MMValue))]
+  
+  ## Return Values:
+  ## 1. alpha that gives the expected waiting time closer to the book value
+  ## 2. expected waiting time closer to the book value
+  ## 3. matrix powers of TempMatrix for each alpha
+  return(list(alpha_min=alpha_min, ExpWaitTime=ExpWaitTime, MatrixPower=M))
+  
+}
+```
+
+
+#### obtaining the alpha value that gives the expected waiting time closer to the book value (3608.52)
+
+```{r}
+FuzzyResults = FuzzyExpWaitTime(labels = c(1,2,3,4), Ntrials = 1000, pattern = c(1,2,2,3,2), P = Ptilda, alpha <- seq(0.2,0.3,0.001), MMValue = 3608.52)
+
+## Print the alpha value that gives the expected waiting time closer to the book value
+FuzzyResults$alpha_min
+
+## Expected waiting time closer to the book value
+FuzzyResults$ExpWaitTime
+
+## Print the matrix power of 5 for 1st alpha value (i.e. alpha = 0.1)
+FuzzyResults$MatrixPower[1,5]
+
+## Print the matrix power of 4 for 3rd alpha value (i.e. alpha = 0.3)
+FuzzyResults$MatrixPower[3,4]
+
+```
+
+
+#### Stationary probabilities
+
+```{r}
+LongTermProb_DNA = stationary(Ptilda)
+LongTermProb_DNA
+```
+
+
+#### Example 2.26 (on Page 76)
+
+#### In computer security applications, a honeypot is a trap set on a network to detect and counteract computer hackers. Honeypot data are studied in Kimou et al. (2010) using Markov chains. The authors obtain honeypot data from a central database and observe attacks against four computer ports—80, 135, 139, and 445—over 1 year. The ports are the states of a Markov chain along with a state corresponding to no port is attacked. Weekly data are monitored, and the port most often attacked during the week is recorded. The estimated Markov transition matrix for weekly attacks is
+
+```{r}
+Ptilda <- matrix(0, nrow = 5, ncol = 5)
+colnames(Ptilda) <- rownames(Ptilda) <- c(1,2,3,4,5) # 1=80, 2=135, 3=139, 4=445, 5=No attack
+Ptilda[1,] <- c(0, 0, 0, 0, 1)  # Given an 80 in the 1st position
+Ptilda[2,] <- c(0, 8/13, 3/13, 1/13, 1/13)  # Given a 135 in the 1st position
+Ptilda[3,] <- c(1/16, 3/16, 3/8, 1/4, 1/8) # Given a 139 in the 1st position
+Ptilda[4,] <- c(0, 1/11, 4/11, 5/11, 1/11)  # Given a 445 in the 1st position
+Ptilda[5,] <- c(0, 1/8, 1/2, 1/8, 1/4)  # Given a No attack in the 1st position
+Ptilda
+
+round(MatrixPower(Ptilda,2),3)
+
+```
+
+#### Starting from state no attack (0,0,0,0,1), in two weeks Which are the least likely attacked ports after 2 weeks? Port 80, and the corresponding probability is 0.031 (entry row 5 column 1)
+
+#### Starting from state no attack (0,0,0,0,1), in two weeks Which are the most likely attacked ports after 2 weeks? Port 139, and the corresponding probability is 0.387 (entry row 5 column 3)
+
+
+#### Finding Expected Waiting Time for no attacks for 4 consecutive weeks
+
+```{r}
+WaitTimeSecurity <- ExpWaitTime(labels = c(1,2,3,4,5), trials = 1000, pattern = c(5,5,5,5), P = Ptilda)
+WaitTimeSecurity
+```
+
+#### Matrix appraoch
+
+```{r}
+## An absorbing Markov chain is constructed with transition matrix
+## Pattern interested: (5555)
+## "A" correspond to null event
+
+A = c(3/4,1/4,0,0,0)
+NA1 = c(3/4,0,1/4,0,0)
+NA2 = c(3/4,0,0,1/4,0)
+NA3 = c(3/4,0,0,0,1/4)
+NA4 = c(0,0,0,0,1)
+P <- matrix(c(A,NA1,NA2,NA3,NA4),nr=5,nc=5,byrow = T)
+P
+
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+```
+
+
+```{r}
+## Expected Waiting Time (Matrix Approach) for 5555. i.e. no attacks for a month
+MatrixMethod_ComSecirity = 256+64+16+4
+MatrixMethod_ComSecirity
+```
+
+
+#### Fuzzyfying
+
+
+```{r}
+FuzzySecurity <- FuzzyExpWaitTime(labels = c(1,2,3,4,5), Ntrials = 20, pattern = c(5,5,5,5), Ptilda = Ptilda, alpha <- seq(0.3,0.4,0.001), MMValue = 340)
+
+
+```
+
+
+```{r}
+FuzzySecurity$alpha_min
+
+FuzzySecurity$ExpWaitTime
+
+#FuzzySecurity$MatrixPower[192,4] # conditional probabilities after 4 weeks for alpha = 0.391
+FuzzySecurity$MatrixPower
+```
+
+#### Starting from state no attack, in 4 weeks Which are the least likely attacked ports? Port 80, and the corresponding probability is 0.08891714 (entry row 5 column 1) with alpha equals 0.391
+
+#### Starting from state no attack, in 4 weeks Which are the most likely attacked ports? Port 139, and the corresponding probability is 0.2817521 (entry row 5 column 3) with alpha equals 0.391
+
+#### Stationary probabilities
+
+
+```{r}
+LongTermProb_ComSeq = stationary(Ptilda)
+LongTermProb_ComSeq
+```
+
+
+#### Successive Occurrences of DNA Nucleotides
+#### dataset bnrf1ebv (Nucleotide sequence - BNRF1 Epstein-Barr)
+
+
+```{r}
+library(markovchain)
+library(astsa)
+library(seqinr)
+
+## bnrf1ebv, bnrf1hvs - with numbers  (***and EBV - with letters)
+data = bnrf1ebv
+
+#data = bnrf1hvs
+#data = dna2vector(EBV)
+
+for(i in 1:length(data)){
+  if(data[i]==1){
+    data[i] = "A"
+  }
+  else if(data[i]==2){
+    data[i] = "C"
+  }
+  else if(data[i]==3){
+    data[i] = "G"
+  }
+  else{
+    data[i] = "T"
+  }
+}
+```
+
+#### Base Proportions of Nucleotide in bnrf1ebv
+
+```{r}
+alp <- c("A","C","G","T")
+zeroOrderFreq <- count(data,1,alphabet=alp,freq=TRUE)
+barplot(zeroOrderFreq,col=1:4,
+        #main="Compositional bias of each nucleotide",
+        xlab="Nucleotide",
+        ylab="Base proportion")
+```
+
+#### Base Proportions of dinucleotide in bnrf1ebv
+
+```{r}
+library(plotly)
+count(data,2,alphabet=alp,freq=FALSE)
+zeroOrderFreqDin <- count(data,2,alphabet=alp,freq=TRUE)
+round(zeroOrderFreqDin,3)
+barplot(zeroOrderFreqDin,col=rainbow(16),
+        #main="Compositional bias of each dinucleotide",
+        xlab="Dinucleotide",
+        ylab="Base proportion", las = 2)
+```
+
+#### Spectral Enevelop for the data
+
+```{r}
+#data = bnrf1ebv
+#xdata = dna2vector(data)
+#u = specenv(xdata, spans=c(7,7))
+```
+
+
+#### Dynamic Spectral Enevelop for the data
+
+
+```{r}
+library(astsa)
+library(seqinr)
+   u = factor(bnrf1ebv) #3954
+#u = factor(bnrf1hvs)
+   head(u)
+   tail(u)
+  
+```
+
+
+```{r}
+x = model.matrix(~u-1)[,1:3]
+dim(x) # 3954x3
+Var = var(x)
+dim(Var) #3x3
+xspec = mvspec(x, spans=c(7,7), plot=FALSE) # spectral matrices are an array
+length(xspec)
+# called fxx 
+fxxr = Re(xspec$fxx) # fxxr is real(fxx)
+#head(fxxr)
+#tail(fxxr)
+# first, input the data as factors and then
+# make an indicator matrix
+# var-cov matrix
+```
+
+
+
+```{r}
+Var
+ev = eigen(Var)
+ev$vectors
+Q = ev$vectors%*%diag(1/sqrt(ev$values))%*%t(ev$vectors)
+```
+
+
+#### compute spectral envelope and scale vectors
+
+
+```{r}
+num = xspec$n.used
+num
+nfreq = length(xspec$freq) 
+nfreq
+specenv = matrix(0,nfreq,1) 
+beta = matrix(0,nfreq,3)
+# effective sample size
+# number of frequencies
+# initialize the spectral envelope
+# initialize the scale vectors
+for (k in 1:nfreq){
+ev = eigen(2*Q%*%fxxr[,,k]%*%Q/num) # get evalues of normalized spectral
+specenv[k] = ev$values[1] 
+b = Q%*%ev$vectors[,1] 
+beta[k,] = b/sqrt(sum(b^2))
+}
+# b #3x1
+#         [,1]
+#[1,] 0.9360134
+#[2,] 2.7509599
+#[3,] 1.7859554
+#beta
+dim(beta)  #2000x3
+```
+
+
+
+```{r}
+##--- dynamic part ---##
+z = matrix(0,250,8)
+output2 = array(0, dim=c(250,5,8))
+colnames(output2) = c("freq","specenv","A", "C", "G") 
+for (j in 1:8){
+ind = (500*(j-1)+1):(500*j)
+if (j==8) ind=3501:length(bnrf1ebv)
+xx = x[ind,] # select subsequence -- the rest of the this part is the same
+# as above
+Var = var(xx)
+xspec = mvspec(xx, spans=c(3,3), plot=FALSE)
+fxxr = Re(xspec$fxx)
+ev = eigen(Var)
+Q = ev$vectors%*%diag(1/sqrt(ev$values))%*%t(ev$vectors) 
+num = xspec$n.used
+nfreq = length(xspec$freq)
+frequency = (0:(nfreq-1))/num
+specenv = matrix(0, nfreq, 1)
+beta = matrix(0, nfreq, 3)
+for (k in 1:nfreq){
+ev = eigen(2*Q%*%fxxr[,,k]%*%Q/num) 
+specenv[k] = ev$values[1]
+b = Q%*%ev$vectors[,1]
+beta[k,] = b/sqrt(sum(b^2))
+}
+if(j<8) { z[,j] = specenv; output2[,,j] = cbind(frequency, specenv, beta) }
+if(j==8) { z[1:240,8] = specenv; output2[1:240,,j] = cbind(frequency, specenv,
+beta) }
+}
+```
+
+
+
+```{r}
+#--- output and graphics (results in output2)---#
+zz = 100*t(z) # zz is 8x250
+rowss = rep(1:8, each=2)
+zz = zz[rowss,] # now it’s 16x250
+# threshold
+m = xspec$kernel$m
+nuinv = sqrt(sum(xspec$kernel[-m:m]^2))
+thresh=100*(2/num)*exp(qnorm(.995)*nuinv)
+#dev.new(height = 5)
+par(mar=c(3,3,3,1), mgp=c(1.6,.6,0))
+xa = 0:249/500
+ya1 = 1736+500*0:8
+rowss = c(1, rep(2:8, each=2), 9)
+ya = ya1[rowss]
+ya[seq(2,16,by=2)] = ya[seq(2,16,by=2)]-.5
+levs = thresh*seq(0, 4.5, by=.5)
+colr = gray(c(10,9,5,4.5,4,3,2,1,0)/10)
+
+jpeg("contourplot.jpg", width = 800, height = 600)
+
+contour(ya, xa, zz, xlab="base pair", ylab="frequency", levels=levs, col=colr,
+main="Epstein-Barr BNRF1", lwd=2, drawlabels=FALSE)
+
+abline(v = ya1, lty = 2, col = "gray")
+
+dev.off()
+
+```
+
+
+
+```{r}
+## transition probability matrix
+PtildaTemp = markovchainFit(data)
+
+Ptilda = markovchainFit(data)$estimate
+Ptilda = as.matrix(Ptilda[1:4])
+round(Ptilda,3)
+```
+
+
+```{r}
+ ## Check lower end and upper end matrices
+Ptilda_lower = markovchainFit(data)$lowerEndpointMatrix
+round(Ptilda_lower,3)
+Ptilda_upper = markovchainFit(data)$upperEndpointMatrix
+round(Ptilda_upper,3)
+```
+
+#### Matrix Approach
+
+```{r}
+## pattern matrix for bnrf1ebv as accgc the pattern
+t<-c(0.825,0.175,0,0,0,0)
+a<-c(0.531,0.175,0.294,0,0,0)
+ac<-c(0.445,0.237,0,0.318,0,0)
+acc<-c(0.544,0.237,0,0,0.219,0)
+accg<-c(0.504,0.198,0,0,0,0.298)
+accgc<-c(0,0,0,0,0,1)
+
+## pattern matrix for bnrf1hvs as accgc the pattern
+# t<-c(0.668,0.332,0,0,0,0)
+# a<-c(0.474,0.332,0.194,0,0,0)
+# ac<-c(0.422,0.391,0,0.187,0,0)
+# acc<-c(0.555,0.391,0,0,0.054,0)
+# accg<-c(0.485,0.294,0,0,0,0.221)
+# accgc<-c(0,0,0,0,0,1)
+P<-matrix(c(t,a,ac,acc,accg,accgc),nr=6,nc=6,byrow = T)
+P
+Q<-P[1:5,1:5]
+F= solve(diag(5)-Q)  ## F = (I-Q)^(-1)
+F
+```
+
+
+```{r}
+## average number of nucleotides needed to reach pattern accgc IN bnrf1ebv
+
+round(682.8423 + 163.8948 + 48.18507 + 15.32285 + 3.355705,3)
+
+## average number of nucleotides needed to reach pattern accgc IN bnrf1hvs
+
+round(sum(F[1,]),3)
+```
+
+
+#### Fuzzy pattern mining algorithm
+
+
+```{r}
+FuzzyResultsDNA = FuzzyExpWaitTime(labels = c(1,2,3,4), Ntrials = 1000, pattern = c(1,2,2,3,2), P = Ptilda, alpha <- seq(0,1,0.001), MMValue = 913.601) ##mm value is matrix approach value
+
+## Print the alpha value that gives the expected waiting time closer to the book value
+FuzzyResultsDNA$alpha_min
+
+## Expected waiting time closer to the book value
+FuzzyResultsDNA$ExpWaitTime
+
+## Print the matrix power of 5 for 1st alpha value (i.e. alpha = 0.1)
+FuzzyResultsDNA$MatrixPower[1,5]
+
+## Print the matrix power of 4 for 3rd alpha value (i.e. alpha = 0.3)
+FuzzyResultsDNA$MatrixPower[3,4]
+
+```
+
+
+#### Observe and Estimated proportions and counts
+
+
+```{r}
+## Observe counts
+count(data,1,alphabet=alp,freq=FALSE)
+
+## Observe Proportions
+zeroOrderFreq <- count(data,1,alphabet=alp,freq=TRUE)
+round(zeroOrderFreq,3)
+
+## Estimated proportions
+LongTermProb_DNA = stationary(Ptilda)
+round(LongTermProb_DNA,3)
+
+## Estimated counts
+round(LongTermProb_DNA*length(data),3)
+
+## Estimated counts
+## LongTermProb_DNA*3954
+## 743.2140 1195.3063 1232.3160  783.1637
+
+## Estimated Proportions
+## 0.1879651 0.3023030 0.3116631 0.1980687
+## Note they are close - Add a table to WP
+```
+
+
+#### Example 3-Financial Application (Stocks)
+
+
+```{r, include = FALSE}
+library(zoo)
+library(MASS)
+library(stats)
+library(car)
+library(moments)
+library(fGarch)
+library(rugarch)
+library(plotly)
+library(PerformanceAnalytics)
+library(quantmod)
+library(VGAM)
+library(scales)
+library(PEIP)
+library(markovchain)
+library(writexl)
+library(tseries)
+```
+
+
+```{r}
+start.date = '2017-01-01'
+end.date = '2022-11-30'
+ getSymbols(c("^GSPC","^VIX","GOOG","AAPL"), src = "yahoo", from = start.date, to = end.date)
+# 
+ stocks <- merge(SP500 = GSPC[, "GSPC.Close"],VIX = VIX[, "VIX.Close"],GOOG = GOOG[, "GOOG.Close"],AAPL = AAPL[, "AAPL.Close"])
+# 
+ head(stocks)
+```
+
+
+
+```{r}
+assets <- c('SP500','VIX','GOOG','AAPL')
+xy <- stocks
+colnames(xy) <- assets
+##Calculate log returns
+
+log_return<-xy %>% log %>% diff #log returns
+#return<- exp (log_return) - 1 #returns
+head(log_return)
+tail(log_return)
+nrow(log_return)
+```
+
+
+
+```{r}
+##Creating signs
+signal <- list()
+for (i in 1:length(assets)){
+signal [[i]] <- ifelse(as.data.frame(log_return[, i]) >= 0, 1, -1)#if the ith col of logreturns >=0 (positive) then create signal with 1, 
+  #otherwise (logreturns<0) signal=-1
+}
+signal<-as.data.frame(do.call(cbind, signal))
+colnames(signal) <- assets
+head(signal)
+```
+
+
+
+```{r}
+
+##Creating markov matrix
+markovmatrix <-list()
+for (j in 1:length(assets)){
+seq1 = na.omit (as.vector (signal[, j]))
+markovmatrix[[j]] <-markovchainFit(seq1)$estimate
+}
+asset_number<-3
+assets[asset_number]
+stock<-as.matrix(markovmatrix[[asset_number]][1:2])# goog. Change first argument to get matrix for each CC. i.e.markovmatrix[[2]][1:2] for vix.
+stock
+colnames(stock) <- c(0,1) #Assign names to the columns 
+rownames(stock) <- c(0,1)
+ stock
+
+```
+
+
+#### Matrix approach- pattern 0101-aapl
+
+
+```{r}
+
+phi<-c(0.552,0.448,0,0,0)
+s1<-c(0,0.448,0.552,0,0)
+s2<-c(0.521,0,0,0.479,0)
+s3<-c(0,0.448,0,0,0.552)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+```
+
+
+#### Matrix approach- pattern 0101-goog
+
+
+```{r}
+
+phi<-c(0.543,0.457,0,0,0)
+s1<-c(0,0.457,0.543,0,0)
+s2<-c(0.546,0,0,0.454,0)
+s3<-c(0,0.457,0,0,0.543)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+```
+
+
+#### Matrix approach- pattern 0001-sp500
+
+
+```{r}
+
+phi<-c(0.569,0.431,0,0,0)
+s1<-c(0.569,0,0.431,0,0)
+s2<-c(0.569,0,0,0.431,0)
+s3<-c(0,0,0,0.431,0.569)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+ sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 0010-sp500
+
+
+```{r}
+
+phi<-c(0.569,0.431,0,0,0)
+s1<-c(0.569,0,0.431,0,0)
+s2<-c(0,0,0.431,0.569,0)
+s3<-c(0.538,0,0,0,0.462)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+  sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 0100-sp500
+
+
+```{r}
+
+phi<-c(0.569,0.431,0,0,0)
+s1<-c(0,0.431,0.569,0,0)
+s2<-c(0.538,0,0,0.462,0)
+s3<-c(0,0,0.569,0,0.431)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+ 
+ sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 0011-sp500
+
+
+```{r}
+
+phi<-c(0.569,0.431,0,0,0)
+s1<-c(0.569,0,0.431,0,0)
+s2<-c(0,0,0.431,0.569,0)
+s3<-c(0,0.462,0,0,0.538)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+ sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 0101-sp500
+
+
+```{r}
+
+phi<-c(0.569,0.431,0,0,0)
+s1<-c(0,0.431,0.569,0,0)
+s2<-c(0.538,0,0,0.462,0)
+s3<-c(0,0.431,0,0,0.569)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+ sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 1100-sp500
+
+
+```{r}
+
+phi<-c(0.431,0.569,0,0,0)
+s1<-c(0.462,0,0.538,0,0)
+s2<-c(0,0,0.538,0.462,0)
+s3<-c(0,0.569,0,0,0.431)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+ sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 1110-sp500
+
+
+```{r}
+
+phi<-c(0.431,0.569,0,0,0)
+s1<-c(0.462,0,0.538,0,0)
+s2<-c(0.462,0,0,0.538,0)
+s3<-c(0,0,0,0.538,0.462)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+  sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 1101-sp500
+
+
+```{r}
+
+phi<-c(0.431,0.569,0,0,0)
+s1<-c(0.462,0,0.538,0,0)
+s2<-c(0,0,0.538,0.462,0)
+s3<-c(0.431,0,0,0,0.569)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+ sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 1011-sp500
+
+
+```{r}
+
+phi<-c(0.431,0.569,0,0,0)
+s1<-c(0,0.538,0.462,0,0)
+s2<-c(0.431,0,0,0.569,0)
+s3<-c(0.462,0,0,0,0.538)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+ sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 0001-vix
+
+
+```{r}
+
+phi<-c(0.453,0.547,0,0,0)
+s1<-c(0.453,0,0.547,0,0)
+s2<-c(0.453,0,0,0.547,0)
+s3<-c(0,0,0,0.547,0.453)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+ sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 0010-vix
+
+
+```{r}
+
+phi<-c(0.453,0.547,0,0,0)
+s1<-c(0.453,0,0.547,0,0)
+s2<-c(0,0,0.547,0.453,0)
+s3<-c(0.426,0,0,0,0.574)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+ sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 0100-vix
+
+
+```{r}
+
+phi<-c(0.453,0.547,0,0,0)
+s1<-c(0,0.547,0.453,0,0)
+s2<-c(0.426,0,0,0.574,0)
+s3<-c(0,0,0.453,0,0.547)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+ sum(F[1,])
+```
+
+
+
+#### Matrix approach- pattern 0011-vix
+
+
+```{r}
+
+phi<-c(0.453,0.547,0,0,0)
+s1<-c(0.453,0,0.547,0,0)
+s2<-c(0,0,0.547,0.453,0)
+s3<-c(0,0.574,0,0,0.426)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+  sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 1100-vix
+
+
+```{r}
+
+phi<-c(0.547,0.453,0,0,0)
+s1<-c(0.574,0,0.426,0,0)
+s2<-c(0,0,0.426,0.574,0)
+s3<-c(0,0.453,0,0,0.547)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+ sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 1110-vix
+
+
+```{r}
+
+phi<-c(0.547,0.453,0,0,0)
+s1<-c(0.574,0,0.426,0,0)
+s2<-c(0.574,0,0,0.426,0)
+s3<-c(0,0,0,0.426,0.574)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+ sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 1101-vix
+
+
+```{r}
+
+phi<-c(0.547,0.453,0,0,0)
+s1<-c(0.574,0,0.426,0,0)
+s2<-c(0,0,0.426,0.574,0)
+s3<-c(0.547,0,0,0,0.453)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+ sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 1011-vix
+
+
+```{r}
+
+phi<-c(0.547,0.453,0,0,0)
+s1<-c(0,0.426,0.574,0,0)
+s2<-c(0.547,0,0,0.453,0)
+s3<-c(0,0,0.574,0,0.426)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+ sum(F[1,])
+```
+
+
+
+#### Matrix approach- pattern 0001-goog
+
+
+```{r}
+
+phi<-c(0.537,0.463,0,0,0)
+s1<-c(0.537,0,0.463,0,0)
+s2<-c(0.537,0,0,0.463,0)
+s3<-c(0,0,0,0.463,0.537)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+  sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 0010-goog
+
+
+```{r}
+
+phi<-c(0.537,0.463,0,0,0)
+s1<-c(0.537,0,0.463,0,0)
+s2<-c(0,0,0.463,0.537,0)
+s3<-c(0.544,0,0,0,0.456)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+  sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 0100-goog
+
+
+```{r}
+
+phi<-c(0.537,0.463,0,0,0)
+s1<-c(0,0.463,0.537,0,0)
+s2<-c(0.544,0,0,0.456,0)
+s3<-c(0,0,0.537,0,0.463)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+  sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 1000-goog
+
+
+```{r}
+
+phi<-c(0.457,0.543,0,0,0)
+s1<-c(0,0.546,0.454,0,0)
+s2<-c(0,0.543,0,0.457,0)
+s3<-c(0,0.543,0,0,0.457)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+```
+
+
+#### Matrix approach- pattern 0011-goog
+
+
+```{r}
+
+phi<-c(0.537,0.463,0,0,0)
+s1<-c(0.537,0,0.463,0,0)
+s2<-c(0,0,0.463,0.537,0)
+s3<-c(0,0.456,0,0,0.544)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+  sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 1001-goog
+
+
+```{r}
+
+phi<-c(0.457,0.543,0,0,0)
+s1<-c(0,0.546,0.454,0,0)
+s2<-c(0,0.543,0,0.457,0)
+s3<-c(0.457,0,0,0,0.543)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+```
+
+
+#### Matrix approach- pattern 0110-goog
+
+
+```{r}
+
+phi<-c(0.543,0.457,0,0,0)
+s1<-c(0,0.457,0.543,0,0)
+s2<-c(0,0.454,0,0.546,0)
+s3<-c(0.546,0,0,0,0.454)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+```
+
+
+#### Matrix approach- pattern 1010-goog
+
+
+```{r}
+
+phi<-c(0.457,0.543,0,0,0)
+s1<-c(0,0.546,0.454,0,0)
+s2<-c(0.457,0,0,0.543,0)
+s3<-c(0,0.546,0,0,0.454)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+```
+
+
+#### Matrix approach- pattern 1100-goog
+
+
+```{r}
+
+phi<-c(0.463,0.537,0,0,0)
+s1<-c(0.456,0,0.544,0,0)
+s2<-c(0,0,0.544,0.456,0)
+s3<-c(0,0.537,0,0,0.463)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+  sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 0111-goog
+
+
+```{r}
+
+phi<-c(0.543,0.457,0,0,0)
+s1<-c(0,0.457,0.543,0,0)
+s2<-c(0,0.454,0,0.546,0)
+s3<-c(0,0.454,0,0,0.546)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+```
+
+
+#### Matrix approach- pattern 1110-goog
+
+```{r}
+
+phi<-c(0.463,0.537,0,0,0)
+s1<-c(0.456,0,0.544,0,0)
+s2<-c(0.456,0,0,0.544,0)
+s3<-c(0,0,0,0.544,0.456)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+  sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 1101-goog
+
+
+```{r}
+
+phi<-c(0.463,0.537,0,0,0)
+s1<-c(0.456,0,0.544,0,0)
+s2<-c(0,0,0.544,0.456,0)
+s3<-c(0.463,0,0,0,0.537)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+  sum(F[1,])
+```
+
+#### Matrix approach- pattern 1011-goog
+
+```{r}
+
+phi<-c(0.463,0.537,0,0,0)
+s1<-c(0,0.544,0.456,0,0)
+s2<-c(0.463,0,0,0.537,0)
+s3<-c(0,0,0.456,0,0.544)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+  sum(F[1,])
+```
+
+
+#### Matrix approach- pattern 1011-goog
+
+
+```{r}
+
+phi<-c(0.457,0.543,0,0,0)
+s1<-c(0.454,0,0.546,0,0)
+s2<-c(0.454,0,0,0.546,0)
+s3<-c(0.454,0,0,0,0.546)
+s4<-c(0,0,0,0,1)
+ P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+ P
+Q<-P[1:4,1:4]
+ F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+ F
+```
+
+
+```{r}
+## average number of days needed to reach a pattern (Ex:0101) 
+  11.314158 +6.143588+ 3.354399+ 1.831502
+```
+
+
+####  New Approach:Fuzzy Pattern Mining Algorithm
+
+
+```{r}
+## Function to Calculate Expected Waiting Time
+
+ExpWaitTime <- function(labels = c(0,1), trials = 1000, pattern = c(0,0,1,1), P = matrix(c(0.25, 0.25, 0.25, 0.25), nrow = 2, ncol = 2)){
+  
+  init <- as.vector(rep(1/length(labels),length(labels)))
+  
+  states <- 1:length(init)
+  
+  simlist <- c()
+  simlist1 <- c()
+  
+  for (i in 1:trials) {
+  
+    simlist[1] <- sample(states,1,prob=init)
+  
+    for (j in 2:length(pattern)) {
+      simlist[j] <- sample(states,1,prob=P[simlist[j-1],])
+    }
+  
+    STATE <- c()
+    for (k in 1:length(pattern)) {
+      STATE[k] = simlist[k]
+    }
+    
+    n<-length(pattern)
+    m<-length(pattern)
+    
+    temp=n-2
+    
+    while (!prod(labels[STATE]==pattern)){
+      simlist[n+1] <- sample(states,1,prob=P[simlist[n],])
+      for (l in 1:length(pattern)) {
+        STATE[l] = simlist[n-temp+l-1]
+      }
+      n = n+1
+      m = m+1
+    }
+    
+    simlist1[i] <- m 
+    
+  }
+  
+  return(mean(simlist1))
+  
+}
+```
+
+
+```{r}
+# Note
+# interested pattern: 0101
+
+Time_stock = ExpWaitTime(labels = c(0,1), trials = 1000, pattern = c(1,1,1,1), P = stock)
+
+Time_stock
+```
+
+
+####  Fuzzyfying: (P = pQ + (1 − p)A)
+
+```{r}
+## Function to find the the power (k^th power) of a given matrix
+
+MatrixPower <- function(Matrix,k) {
+	if (k == 0) return (diag(dim(Matrix)[1])) 
+	if (k == 1) return(Matrix)
+	if (k > 1) return(Matrix %*% MatrixPower(Matrix, k-1))
+}
+```
+
+
+```{r}
+FuzzyExpWaitTime <- function(labels = c(0,1), trials = 1000, pattern = c(0,0,1,1), P = matrix(c(0.25 ,0.25, 0.25, 0.25), nrow = 2, ncol = 2),alpha = seq(0.1,0.9,0.1), MMValue =26.43){
+ 
+## Initializing minimum alpha 
+alpha_min <- 0
+  
+## Initializing stochastic matrix (each entry is same and represent equal probability)
+R <- matrix(1/length(labels), nrow = length(labels), ncol = length(labels))
+  
+  
+## Initializing temporary vector to save expected wait time for each alpha
+TempExpTime <- c()
+
+## Maximum matrix power (k). For now we set maximum matrix power to length of the pattern we are interested in.
+  k = length(pattern)
+  
+## Note: For each i (i.e. alpha value), we have 5 different powers (DNA example) of TempMatrix. Thus, to save all the matrices in correct order (alpha value and power), we need to save matrices within a matrix.
+  
+  ## Initializing a matrix which has a matrix in each entry
+  m <- matrix(0, nrow = length(labels), ncol = length(labels))
+  M <- matrix(list(m), nrow = length(alpha), ncol = k)  
+  
+  ## For loop to calculate expected wait time and matrix power for each alpha
+  for (i in 1:length(alpha)) {
+    
+  ## Fuzzyfying
+    TempMatrix = alpha[i]*R + (1-alpha[i])*P
+    
+  ## Calculate expected wait time using "ExpWaitTime" for each alpha
+    TempExpTime[i] <- ExpWaitTime(labels = labels, trials = trials, pattern = pattern, P = TempMatrix)
+    
+  ## Finding matrix powers
+    for (j in 1:k) {
+      M[[i,j]] <- MatrixPower(TempMatrix,j)
+    }
+    
+  }
+  
+  ## Finding alpha that gives the expected waiting time closer to the book value
+  alpha_min <- alpha[which.min(abs(TempExpTime-MMValue))]
+  
+  ExpWaitTime <- TempExpTime[which.min(abs(TempExpTime-MMValue))]
+  
+  ## Return Values:
+  ## 1. alpha that gives the expected waiting time closer to the book value
+  ## 2. expected waiting time closer to the book value
+  ## 3. matrix powers of TempMatrix for each alpha
+  return(list(alpha_min=alpha_min, ExpWaitTime=ExpWaitTime, MatrixPower=M))
+  
+}
+```
+
+
+####  Obtaining the alpha value that gives the expected waiting time closer to the matrix value ()
+
+```{r}
+FuzzyResults = FuzzyExpWaitTime(labels = c(0,1), trials = 1000, pattern = c(1,1,1,1), P =stock, alpha <- seq(0.1,0.3,0.01), MMValue =22.64)
+
+## Print the alpha value that gives the expected waiting time closer to the book value
+FuzzyResults$alpha_min
+
+## Expected waiting time closer to the book value
+FuzzyResults$ExpWaitTime
+
+## Print the matrix power of 3 for 1st alpha value (i.e. alpha = 0.1)
+FuzzyResults$MatrixPower[1,3]
+
+## Print the matrix power of 4 for 3rd alpha value (i.e. alpha = 0.3)
+FuzzyResults$MatrixPower[3,4]
+
+```
+
+
+####  Financial Application for Cryptocurrency data
+
+Crypto currency price data ($P_t$) for 5 different cryptos were extracted for one year period of time from 2021-11-26 to 2022-11-26.
+
+
+```{r}
+# Set start and end date of data to download
+dateStart <- "2021-11-26"               
+dateEnd <- "2022-11-26"               # sdate3 <- "12-15-2001"
+
+startD=as.Date(dateStart, "%Y-%m-%d") # date <- as.Date(date, "%m-%d-%Y"); ndate3
+startD
+endD=as.Date(dateEnd, "%Y-%m-%d")
+
+sprintf("We consider %d days", endD-startD)
+
+# Bitcoin USD (BTC-USD)
+BTC <- get.hist.quote(instrument="BTC-USD",start = dateStart, end=dateEnd,quote = c("AdjClose"), retclass="zoo")
+
+# Ethereum USD (ETH-USD)
+ETH <- get.hist.quote(instrument="ETH-USD",start = dateStart, end=dateEnd,quote = c("AdjClose"), retclass="zoo")
+
+# BNB USD (BNB-USD)
+BNB <- get.hist.quote(instrument="BNB-USD",start = dateStart, end=dateEnd,quote = c("AdjClose"), retclass="zoo")
+
+# XRP USD (XRP-USD)
+XRP <- get.hist.quote(instrument="XRP-USD",start = dateStart, end=dateEnd,quote = c("AdjClose"), retclass="zoo")
+
+# Dogecoin USD (DOGE-USD)
+DOGE <- get.hist.quote(instrument="DOGE-USD",start = dateStart, end=dateEnd,quote = c("AdjClose"), retclass="zoo")
+
+# Cardano USD (ADA-USD)
+ADA <- get.hist.quote(instrument="ADA-USD",start = dateStart, end=dateEnd,quote = c("AdjClose"), retclass="zoo")
+
+
+crypto <- merge(BTC,ETH,BNB,XRP,DOGE,ADA) # price data
+
+head(crypto)
+tail(crypto)
+
+assets <- c('BTC','ETH','BNB','XRP','DOGE','ADA')
+
+```
+
+
+Log returns ($r_t$) for price data were created as follows.
+
+Log Returns = log ($P_t$) - log($P_{t-1}$)
+
+
+```{r}
+##Log returns
+log_return<-crypto %>% log %>% diff #log returns
+#return<- exp (log_return) - 1 #returns
+head(log_return)
+tail(log_return)
+nrow(log_return)
+```
+
+A dataframe called signals was then created according to the symbol of log returns values. 
+
+i.e. if the log returns >=0 (positive) then signal= 1, otherwise (logreturns<0) signal= -1
+
+```{r}
+##Creating signs
+signal <- list()
+for (i in 1:ncol(crypto)){
+  signal [[i]] <- ifelse(as.data.frame(log_return[, i]) >= 0, 1, -1)# #if the ith col of logreturns >=0 (positive) then create signal with 1, 
+  #otherwise (logreturns<0) signal=-1
+}
+signal<-as.data.frame(do.call(cbind, signal))
+colnames(signal) <- assets
+head(signal)
+tail(signal)
+```
+
+
+Creating the markovchain matrix. This is the transition matrix with the probabilities of making a transition from one state to another.
+
+
+```{r}
+##Creating markov matrix
+markovmatrix <-list()
+for (j in 1:ncol(crypto)){
+  seq1 = na.omit (as.vector (signal[, j]))
+  markovmatrix[[j]] <- markovchainFit(seq1)$estimate
+}
+crypto_number<-3
+assets[crypto_number]
+crypto<-as.matrix(markovmatrix[[crypto_number]][1:2])# btc. Change first argument to get matrix for each CC. i.e.markovmatrix[[1]][1:2] for ETH.
+colnames(crypto) <- c(0,1) #Assign names to the columns 
+rownames(crypto) <- c(0,1)
+ crypto
+
+```
+
+
+#### Matrix approach - BTC(0000) 
+
+
+```{r}
+phi<-c(0.458,0.542,0,0,0)
+s1<-c(0.458,0,0.542,0,0)
+s2<-c(0.458,0,0,0.542,0)
+s3<-c(0.458,0,0,0,0.542)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+####  Matrix approach - BTC(0001) 
+
+
+```{r}
+phi<-c(0.458,0.542,0,0,0)
+s1<-c(0.458,0,0.542,0,0)
+s2<-c(0.458,0,0,0.542,0)
+s3<-c(0,0,0,0.542,0.458)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach - BTC(0010) 
+
+
+```{r}
+phi<-c(0.458,0.542,0,0,0)
+s1<-c(0.458,0,0.542,0,0)
+s2<-c(0,0,0.542,0.458,0)
+s3<-c(0.483,0,0,0,0.517)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach - BTC(0011) 
+
+
+```{r}
+phi<-c(0.542,0.458,0,0,0)
+s1<-c(0.458,0,0.542,0,0)
+s2<-c(0,0,0.542,0.458,0)
+s3<-c(0,0.517,0,0,0.483)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach - BTC(1100) 
+
+
+```{r}
+phi<-c(0.542,0.458,0,0,0)
+s1<-c(0.517,0,0.483,0,0)
+s2<-c(0,0,0.483,0.517,0)
+s3<-c(0.458,0,0,0,0.542)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach - BTC(1110) 
+
+
+```{r}
+phi<-c(0.542,0.458,0,0,0)
+s1<-c(0.517,0,0.483,0,0)
+s2<-c(0.517,0,0,0.483,0)
+s3<-c(0,0,0,0.483,0.517)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach - BTC(1101) 
+
+
+```{r}
+phi<-c(0.542,0.458,0,0,0)
+s1<-c(0.517,0,0.483,0,0)
+s2<-c(0,0,0.483,0.517,0)
+s3<-c(0.542,0,0,0,0.458)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach - BTC(1011) 
+
+
+```{r}
+phi<-c(0.542,0.458,0,0,0)
+s1<-c(0,0.483,0.517,0,0)
+s2<-c(0.542,0,0,0.458,0)
+s3<-c(0,0,0.517,0,0.483)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach -ADA pattern 0101
+
+
+```{r}
+
+phi<-c(0.526,0.474,0,0,0)
+s1<-c(0,0.474,0.526,0,0)
+s2<-c(0.409,0,0,0.591,0)
+s3<-c(0,0.474,0,0,0.526)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+```
+
+
+#### Matrix approach -DOGE pattern 0101
+
+
+```{r}
+
+phi<-c(0.545,0.455,0,0,0)
+s1<-c(0,0.455,0.545,0,0)
+s2<-c(0.420,0,0,0.580,0)
+s3<-c(0,0.455,0,0,0.545)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+```
+
+
+#### Matrix approach -XRP pattern 0101
+
+
+```{r}
+
+phi<-c(0.546,0.454,0,0,0)
+s1<-c(0,0.454,0.546,0,0)
+s2<-c(0.439,0,0,0.561,0)
+s3<-c(0,0.454,0,0,0.546)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+```
+
+
+#### Matrix approach -BNB pattern 0000
+
+
+```{r}
+
+phi<-c(0.527,0.473,0,0,0)
+s1<-c(0.527,0,0.473,0,0)
+s2<-c(0.527,0,0,0.473,0)
+s3<-c(0.527,0,0,0,0.473)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach -BNB pattern 0101
+
+
+```{r}
+
+phi<-c(0.527,0.473,0,0,0)
+s1<-c(0,0.473,0.527,0,0)
+s2<-c(0.434,0,0,0.566,0)
+s3<-c(0,0.473,0,0,0.527)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach -BNB pattern 0011
+
+
+```{r}
+
+phi<-c(0.473,0.527,0,0,0)
+s1<-c(0.527,0,0.473,0,0)
+s2<-c(0,0,0.473,0.527,0)
+s3<-c(0,0.563,0,0,0.437)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach -BNB pattern 0001
+
+
+```{r}
+
+phi<-c(0.527,0.473,0,0,0)
+s1<-c(0.527,0,0.473,0,0)
+s2<-c(0.527,0,0,0.473,0)
+s3<-c(0,0,0,0.473,0.527)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach -BNB pattern 0010
+
+
+```{r}
+
+phi<-c(0.527,0.473,0,0,0)
+s1<-c(0.527,0,0.473,0,0)
+s2<-c(0,0,0.473,0.527,0)
+s3<-c(0.437,0,0,0,0.563)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach -BNB pattern 0100
+
+
+```{r}
+
+phi<-c(0.527,0.473,0,0,0)
+s1<-c(0,0.473,0.527,0,0)
+s2<-c(0.437,0,0,0.563,0)
+s3<-c(0,0,0.527,0,0.473)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach -BNB pattern 1100
+
+
+```{r}
+
+phi<-c(0.473,0.527,0,0,0)
+s1<-c(0.563,0,0.437,0,0)
+s2<-c(0,0.437,0,0.563,0)
+s3<-c(0,0,0.527,0,0.473)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach -BNB pattern 1110
+
+
+```{r}
+
+phi<-c(0.473,0.527,0,0,0)
+s1<-c(0.563,0,0.437,0,0)
+s2<-c(0,0,0.437,0.563,0)
+s3<-c(0.527,0,0,0,0.473)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach -BNB pattern 1101
+
+
+```{r}
+
+phi<-c(0.473,0.527,0,0,0)
+s1<-c(0.563,0,0.437,0,0)
+s2<-c(0,0,0.437,0.563,0)
+s3<-c(0.473,0,0,0,0.527)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach -BNB pattern 1011
+
+
+```{r}
+
+phi<-c(0.473,0.527,0,0,0)
+s1<-c(0,0.437,0.563,0,0)
+s2<-c(0.473,0,0,0.527,0)
+s3<-c(0,0,0.563,0,0.437)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach -ETH pattern 0101
+
+
+```{r}
+
+phi<-c(0.474,0.526,0,0,0)
+s1<-c(0,0.526,0.474,0,0)
+s2<-c(0.468,0,0,0.532,0)
+s3<-c(0,0.526,0,0,0.474)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach -ETH pattern 0001
+
+
+```{r}
+
+phi<-c(0.474,0.526,0,0,0)
+s1<-c(0.474,0,0.526,0,0)
+s2<-c(0.474,0,0,0.526,0)
+s3<-c(0,0,0,0.526,0.474)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach -ETH pattern 0001
+
+
+```{r}
+
+phi<-c(0.526,0.474,0,0,0)
+s1<-c(0.474,0,0.526,0,0)
+s2<-c(0,0,0.526,0.474,0)
+s3<-c(0,0.529,0,0,0.471)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach -ETH pattern 1100
+
+
+```{r}
+
+phi<-c(0.526,0.474,0,0,0)
+s1<-c(0.529,0,0.471,0,0)
+s2<-c(0,0,0.471,0.529,0)
+s3<-c(0,0.474,0,0,0.526)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach -ETH pattern 1110
+
+
+```{r}
+
+phi<-c(0.526,0.474,0,0,0)
+s1<-c(0.529,0,0.471,0,0)
+s2<-c(0.529,0,0,0.471,0)
+s3<-c(0,0,0,0.471,0.529)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach -ETH pattern 1101
+
+
+```{r}
+
+phi<-c(0.526,0.474,0,0,0)
+s1<-c(0.529,0,0.471,0,0)
+s2<-c(0,0,0.471,0.529,0)
+s3<-c(0.526,0,0,0,0.474)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach -ETH pattern 1011
+
+
+```{r}
+
+phi<-c(0.526,0.474,0,0,0)
+s1<-c(0,0.471,0.529,0,0)
+s2<-c(0.526,0,0,0.474,0)
+s3<-c(0,0,0.529,0,0.471)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach -ETH pattern 0010
+
+
+```{r}
+
+phi<-c(0.474,0.526,0,0,0)
+s1<-c(0.474,0,0.526,0,0)
+s2<-c(0,0,0.526,0.474,0)
+s3<-c(0.471,0,0,0,0.529)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+#### Matrix approach -BTC pattern 0101
+
+
+```{r}
+
+phi<-c(0.464,0.536,0,0,0)
+s1<-c(0,0.536,0.464,0,0)
+s2<-c(0.478,0,0,0.530,0)
+s3<-c(0,0.536,0,0,0.464)
+s4<-c(0,0,0,0,1)
+P<-matrix(c(phi,s1,s2,s3,s4),nr=5,nc=5,byrow = T)
+P
+Q<-P[1:4,1:4]
+F= solve(diag(4)-Q)  ## F = (I-Q)^(-1)
+F
+sum(F[1,])
+```
+
+
+```{r}
+## average number of days needed to reach pattern 0101
+  4.885400 +6.115628+ 3.216820+ 1.901141
+
+```
+
+
+
+####  New Approach:
+
+
+```{r}
+## Function to Calculate Expected Waiting Time
+
+ExpWaitTime <- function(labels = c(0,1), trials = 1000, pattern = c(0,0,1,1), P = matrix(c(0.25, 0.25, 0.25, 0.25), nrow = 2, ncol = 2)){
+  
+  init <- as.vector(rep(1/length(labels),length(labels)))
+  
+  states <- 1:length(init)
+  
+  simlist <- c()
+  simlist1 <- c()
+  
+  for (i in 1:trials) {
+  
+    simlist[1] <- sample(states,1,prob=init)
+  
+    for (j in 2:length(pattern)) {
+      simlist[j] <- sample(states,1,prob=P[simlist[j-1],])
+    }
+  
+    STATE <- c()
+    for (k in 1:length(pattern)) {
+      STATE[k] = simlist[k]
+    }
+    
+    n<-length(pattern)
+    m<-length(pattern)
+    
+    temp=n-2
+    
+    while (!prod(labels[STATE]==pattern)){
+      simlist[n+1] <- sample(states,1,prob=P[simlist[n],])
+      for (l in 1:length(pattern)) {
+        STATE[l] = simlist[n-temp+l-1]
+      }
+      n = n+1
+      m = m+1
+    }
+    
+    simlist1[i] <- m 
+    
+  }
+  
+  return(mean(simlist1))
+  
+}
+```
+
+
+```{r}
+# Note
+# interested pattern:0101
+
+Time_crypto = ExpWaitTime(labels = c(0,1), trials = 1000, pattern = c(0,0,0,0), P = crypto)
+
+Time_crypto
+```
+
+
+####  Fuzzyfying: (P = pQ + (1 − p)A)
+
+
+```{r}
+## Function to find the the power (k^th power) of a given matrix
+
+MatrixPower <- function(Matrix,k) {
+	if (k == 0) return (diag(dim(Matrix)[1])) 
+	if (k == 1) return(Matrix)
+	if (k > 1) return(Matrix %*% MatrixPower(Matrix, k-1))
+}
+```
+
+
+```{r}
+FuzzyExpWaitTime <- function(labels = c(0,1), trials = 1000, pattern = c(0,0,1,1), P = matrix(c(0.25 ,0.25, 0.25, 0.25), nrow = 2, ncol = 2),alpha = seq(0.1,0.9,0.1), MMValue =25.17){
+ 
+## Initializing minimum alpha 
+alpha_min <- 0
+  
+## Initializing stochastic matrix (each entry is same and represent equal probability)
+R <- matrix(1/length(labels), nrow = length(labels), ncol = length(labels))
+  
+  
+## Initializing temporary vector to save expected wait time for each alpha
+TempExpTime <- c()
+
+## Maximum matrix power (k). For now we set maximum matrix power to length of the pattern we are interested in.
+  k = length(pattern)
+  
+## Note: For each i (i.e. alpha value), we have 5 different powers (DNA example) of TempMatrix. Thus, to save all the matrices in correct order (alpha value and power), we need to save matrices within a matrix.
+  
+  ## Initializing a matrix which has a matrix in each entry
+  m <- matrix(0, nrow = length(labels), ncol = length(labels))
+  M <- matrix(list(m), nrow = length(alpha), ncol = k)  
+  
+  ## For loop to calculate expected wait time and matrix power for each alpha
+  for (i in 1:length(alpha)) {
+    
+  ## Fuzzyfying
+    TempMatrix = alpha[i]*R + (1-alpha[i])*P
+    
+  ## Calculate expected wait time using "ExpWaitTime" for each alpha
+    TempExpTime[i] <- ExpWaitTime(labels = labels, trials = trials, pattern = pattern, P = TempMatrix)
+    
+  ## Finding matrix powers
+    for (j in 1:k) {
+      M[[i,j]] <- MatrixPower(TempMatrix,j)
+    }
+    
+  }
+  
+  ## Finding alpha that gives the expected waiting time closer to the book value
+  alpha_min <- alpha[which.min(abs(TempExpTime-MMValue))]
+  
+  ExpWaitTime <- TempExpTime[which.min(abs(TempExpTime-MMValue))]
+  
+  ## Return Values:
+  ## 1. alpha that gives the expected waiting time closer to the book value
+  ## 2. expected waiting time closer to the book value
+  ## 3. matrix powers of TempMatrix for each alpha
+  return(list(alpha_min=alpha_min, ExpWaitTime=ExpWaitTime, MatrixPower=M))
+  
+}
+```
+
+
+####  obtaining the alpha value that gives the expected waiting time closer to the book value ()
+
+```{r}
+FuzzyResults = FuzzyExpWaitTime(labels = c(0,1), trials =1000, pattern = c(1,1,0,1), P =crypto, alpha <- seq(0.1,0.9,0.11), MMValue =17.85)
+
+## Print the alpha value that gives the expected waiting time closer to the book value
+FuzzyResults$alpha_min
+
+## Expected waiting time closer to the book value
+FuzzyResults$ExpWaitTime
+
+## Print the matrix power of 3 for 1st alpha value (i.e. alpha = 0.1)
+FuzzyResults$MatrixPower[1,3]
+
+## Print the matrix power of 4 for 3rd alpha value (i.e. alpha = 0.3)
+FuzzyResults$MatrixPower[3,4]
+
+```
+
+
+####  Plots of Stocks n cryptocurrencies
+
+```{r}
+# Set start and end date of data to download
+dateStart <- "2017-01-01"               
+dateEnd <- "2022-11-30"               # sdate3 <- "12-15-2001"
+
+startD=as.Date(dateStart, "%Y-%m-%d") # date <- as.Date(date, "%m-%d-%Y"); ndate3
+startD
+endD=as.Date(dateEnd, "%Y-%m-%d")
+
+sprintf("We consider %d days", endD-startD)
+
+# Apple Inc. (AAPL)
+AAPL <- get.hist.quote(instrument="AAPL",start = dateStart, end=dateEnd,quote = c("AdjClose"), retclass="zoo")
+
+# Alphabet Inc. (GOOG)
+GOOG <- get.hist.quote(instrument="GOOG",start = dateStart, end=dateEnd,quote = c("AdjClose"), retclass="zoo")
+
+# CBOE Volatility Index (^VIX)
+VIX <- get.hist.quote(instrument="^VIX",start = dateStart, end=dateEnd,quote = c("AdjClose"), retclass="zoo")
+
+# SP500 (^GSPC)
+SP500 <- get.hist.quote(instrument="^GSPC",start = dateStart, end=dateEnd,quote = c("AdjClose"), retclass="zoo")
+
+dataStocks <- merge(AAPL,GOOG,VIX,SP500) # price data
+
+#head(dataStocks)
+#tail(dataStocks)
+```
+
+
+
+```{r}
+names(dataStocks)<-c("Price.APPL","Price.GOOG","Price.VIX","Price.SP500")
+
+## Daily plot of adjusted closing prices
+
+#plot(dataStocks, xlab="Days", main = "Daily price history of APPL, GOOG, VIX, SP500 ",col=c("black","red", "green", "blue"))
+
+plot(dataStocks$Price.APPL, xlab="Time", main = "Daily Adjusted Closing Price of Apple",ylab = "Adjusted Closing Price ($)", col="black", lwd=3)
+
+plot(dataStocks$Price.GOOG, xlab="Time", main = "Daily Adjusted Closing Price of Google",ylab = "Adjusted Closing Price ($)", col="red", lwd=3)
+
+plot(dataStocks$Price.VIX, xlab="Time", main = "Daily Adjusted Closing Price of VIX",ylab = "Adjusted Closing Price ($)", col="green", lwd=3)
+
+plot(dataStocks$Price.SP500, xlab="Time", main = "Daily Adjusted Closing Price of SP500",ylab = "Adjusted Closing Price ($)", col="blue", lwd=3)
+```
+
+
+#### Cryptocurrencies
+
+```{r}
+
+# Set start and end date of data to download
+dateStart <- "2021-11-26"               
+dateEnd <- "2022-11-26"               # sdate3 <- "12-15-2001"
+
+startD=as.Date(dateStart, "%Y-%m-%d") # date <- as.Date(date, "%m-%d-%Y"); ndate3
+startD
+endD=as.Date(dateEnd, "%Y-%m-%d")
+
+sprintf("We consider %d days", endD-startD)
+
+# Bitcoin USD (BTC-USD)
+BTC <- get.hist.quote(instrument="BTC-USD",start = dateStart, end=dateEnd,quote = c("AdjClose"), retclass="zoo")
+
+# Ethereum USD (ETH-USD)
+ETH <- get.hist.quote(instrument="ETH-USD",start = dateStart, end=dateEnd,quote = c("AdjClose"), retclass="zoo")
+
+# BNB USD (BNB-USD)
+BNB <- get.hist.quote(instrument="BNB-USD",start = dateStart, end=dateEnd,quote = c("AdjClose"), retclass="zoo")
+
+# XRP USD (XRP-USD)
+XRP <- get.hist.quote(instrument="XRP-USD",start = dateStart, end=dateEnd,quote = c("AdjClose"), retclass="zoo")
+
+# Dogecoin USD (DOGE-USD)
+DOGE <- get.hist.quote(instrument="DOGE-USD",start = dateStart, end=dateEnd,quote = c("AdjClose"), retclass="zoo")
+
+# Cardano USD (ADA-USD)
+ADA <- get.hist.quote(instrument="ADA-USD",start = dateStart, end=dateEnd,quote = c("AdjClose"), retclass="zoo")
+
+### Plot the five datasets to understand the basics.
+dataCrypto <- merge(BTC,ETH,BNB,XRP,DOGE,ADA) # price data
+
+head(dataCrypto)
+tail(dataCrypto)
+```
+
+
+
+```{r}
+plot(dataCrypto$Adjusted.BTC, xlab="Time", main = "Daily Adjusted Closing Price of Bitcoin",ylab = "Adjusted Closing Price ($)", col="1", lwd=3)
+
+plot(dataCrypto$Adjusted.ETH, xlab="Time", main = "Daily Adjusted Closing Price of Ethereum",ylab = "Adjusted Closing Price ($)", col="2", lwd=3)
+
+plot(dataCrypto$Adjusted.BNB, xlab="Time", main = "Daily Adjusted Closing Price of Binance Coin",ylab = "Adjusted Closing Price ($)", col="3", lwd=3)
+
+plot(dataCrypto$Adjusted.XRP, xlab="Time", main = "Daily Adjusted Closing Price of XRP-USD",ylab = "Adjusted Closing Price ($)", col="4", lwd=3)
+
+plot(dataCrypto$Adjusted.DOGE, xlab="Time", main = "Daily Adjusted Closing Price of Dogecoin",ylab = "Adjusted Closing Price ($)", col="5", lwd=3)
+
+plot(dataCrypto$Adjusted.ADA, xlab="Time", main = "Daily Adjusted Closing Price of Cardano",ylab = "Adjusted Closing Price ($)", col="6", lwd=3)
+
+```
+
+
